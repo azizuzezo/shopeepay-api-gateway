@@ -226,7 +226,17 @@ app.get('/token-status', apiKeyAuth, async (req, res) => {
         return res.json({ success: false, data: { token_status: 'unknown', message: 'URL transaksi belum diisi — buka /setup.' } });
     }
     try {
-        await axios.post(sessionManager.getTransactionsUrl(), {}, { headers: sessionManager.getValidHeaders(), timeout: 5000 });
+        // Same request shape verifyPayment() uses — this used to POST an empty body and
+        // treat any non-throwing HTTP response as "valid", but Shopee returns its own
+        // errors with HTTP 200 (an error code/msg in the body, not a 4xx/5xx), so that
+        // never actually caught anything. A truthy response.data.msg is Shopee's own way
+        // of saying this call failed, whatever the HTTP status was.
+        const response = await axios.post(sessionManager.getTransactionsUrl(), {
+            data: { metadata: { token: config.get('shopeeToken', 'SHOPEE_TOKEN') } },
+        }, { headers: sessionManager.getValidHeaders(), timeout: 5000 });
+        if (response.data?.msg) {
+            return res.json({ success: false, data: { token_status: 'invalid', message: response.data.msg } });
+        }
         res.json({ success: true, data: { token_status: 'valid', message: 'Token Partner Portal aktif' } });
     } catch (err) {
         res.json({ success: false, data: { token_status: 'invalid', message: err.response?.status === 401 ? 'Token expired/ditolak, copy ulang dari DevTools' : err.message } });
