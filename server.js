@@ -364,6 +364,14 @@ function handleAutoPollChange(chk) {
 // endpoint riwayat transaksi/mutasi ShopeePay begitu lo dapet dari capture.
 function parseShopeeTransactions(rawData) {
     const rawTransactions = rawData?.transactions || rawData?.data?.transactions || rawData?.data || [];
+    if (!Array.isArray(rawTransactions)) {
+        // The guessed field mapping above doesn't match this account's real response shape —
+        // dumping the raw body here (both the live log and /api/logs) is what actually lets the
+        // TODO above get resolved, instead of crashing on .map with no clue what shape to expect.
+        console.log('[ShopeePay] Bentuk respons transaksi tidak dikenali, raw response:', JSON.stringify(rawData));
+        logActivity('ERROR', 'Format respons transaksi ShopeePay tidak dikenali — lihat log server untuk raw response, lalu sesuaikan parseShopeeTransactions().', rawData);
+        return [];
+    }
     return rawTransactions.map((tx) => ({
         amount: parseInt(tx.amount ?? tx.gross_amount ?? 0, 10),
         status: (tx.status || tx.transaction_status || '').toLowerCase(),
