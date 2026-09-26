@@ -370,23 +370,27 @@ function handleAutoPollChange(chk) {
 </html>`);
 });
 
-// TODO(traffic-capture): sesuaikan pemetaan field ini sama response asli
-// endpoint riwayat transaksi/mutasi ShopeePay begitu lo dapet dari capture.
+// Confirmed against a real capture (2026-09-26): the list sits at data.list, amount is a
+// string with "." as an Indonesian thousands separator (not a decimal point — "10.000" means
+// ten thousand rupiah, not ten), createTime is UNIX seconds (not ms), and status is a NUMBER
+// (3 observed on every completed transaction in that capture, matching data.totalCompletedCount
+// — no other status value has been observed yet, so this is confirmed for "completed" but not
+// exhaustively verified for other states like pending/cancelled).
 function parseShopeeTransactions(rawData) {
-    const rawTransactions = rawData?.transactions || rawData?.data?.transactions || rawData?.data || [];
+    const rawTransactions = rawData?.data?.list || [];
     if (!Array.isArray(rawTransactions)) {
-        // The guessed field mapping above doesn't match this account's real response shape —
-        // dumping the raw body here (both the live log and /api/logs) is what actually lets the
-        // TODO above get resolved, instead of crashing on .map with no clue what shape to expect.
+        // Shape doesn't match the confirmed one above — dumping the raw body here (both the
+        // live log and /api/logs) is what lets that mapping get corrected again if Shopee ever
+        // changes it, instead of crashing on .map with no clue what shape to expect.
         console.log('[ShopeePay] Bentuk respons transaksi tidak dikenali, raw response:', JSON.stringify(rawData));
         logActivity('ERROR', 'Format respons transaksi ShopeePay tidak dikenali — lihat log server untuk raw response, lalu sesuaikan parseShopeeTransactions().', rawData);
         return [];
     }
     return rawTransactions.map((tx) => ({
-        amount: parseInt(tx.amount ?? tx.gross_amount ?? 0, 10),
-        status: (tx.status || tx.transaction_status || '').toLowerCase(),
-        time: tx.time || tx.transaction_time || tx.created_at,
-        transaction_id: tx.id || tx.transaction_id || tx.reference_id,
+        amount: parseInt(String(tx.amount ?? tx.gross_amount ?? 0).replace(/\./g, ''), 10),
+        status: String(tx.status ?? tx.transaction_status ?? ''),
+        time: tx.createTime ? tx.createTime * 1000 : (tx.time || tx.transaction_time || tx.created_at),
+        transaction_id: tx.transactionId || tx.id || tx.transaction_id || tx.reference_id,
     }));
 }
 
@@ -401,14 +405,11 @@ async function verifyPayment(amount, startTime, userAgent, qrisId) {
     const now = new Date();
     const startTimeISO = startTime ? new Date(startTime).toISOString() : new Date(now.getTime() - 24 * 3600 * 1000).toISOString();
 
-    // The portal's own get-transaction-list request carries the token inside
-    // data.metadata.token, not as a bearer header (see sessionManager.js's
-    // top comment — that's literally where the token was captured from).
-    // The previous flat {start_time, end_time} body was missing that
-    // metadata wrapper entirely, which is exactly what Shopee's "metadata
-    // missing" (code 2010000) error meant. start_time/end_time's own field
-    // names are still an unverified guess — if this still 404s/errors, the
-    // parseShopeeTransactions() logging will show the next real response.
+    // Confirmed working (2026-09-26): the portal's own get-transaction-list request carries
+    // the token inside data.metadata.token, not as a bearer header (see sessionManager.js's
+    // top comment — that's literally where the token was captured from). start_time/end_time
+    // are accepted as-is; whether the endpoint actually filters by them or just ignores them
+    // and returns recent history regardless hasn't been confirmed either way.
     const response = await axios.post(sessionManager.getTransactionsUrl(), {
         data: {
             metadata: { token: config.get('shopeeToken', 'SHOPEE_TOKEN') },
@@ -426,7 +427,10 @@ async function verifyPayment(amount, startTime, userAgent, qrisId) {
 
     for (const tx of transactions) {
         const txTimestamp = new Date(tx.time || 0).getTime();
-        if (tx.amount !== targetAmount || txTimestamp < filterStartTimeMs) continue;
+        // status "3" is the only value confirmed as "completed" so far (see
+        // parseShopeeTransactions) — skipping anything else so a pending/cancelled entry
+        // can never get claimed as a paid donation.
+        if (tx.amount !== targetAmount || txTimestamp < filterStartTimeMs || tx.status !== '3') continue;
 
         const existingClaim = claimedTransactions.get(tx.transaction_id);
         if (!existingClaim) {
