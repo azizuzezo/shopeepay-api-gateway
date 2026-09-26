@@ -391,12 +391,20 @@ async function verifyPayment(amount, startTime, userAgent, qrisId) {
     const now = new Date();
     const startTimeISO = startTime ? new Date(startTime).toISOString() : new Date(now.getTime() - 24 * 3600 * 1000).toISOString();
 
-    // TODO(partner-portal-capture): sesuaikan body request ini sama persis
-    // request `get-transaction-list` asli yang lo lihat di DevTools Network
-    // tab (Request Payload -> data -> ...).
+    // The portal's own get-transaction-list request carries the token inside
+    // data.metadata.token, not as a bearer header (see sessionManager.js's
+    // top comment — that's literally where the token was captured from).
+    // The previous flat {start_time, end_time} body was missing that
+    // metadata wrapper entirely, which is exactly what Shopee's "metadata
+    // missing" (code 2010000) error meant. start_time/end_time's own field
+    // names are still an unverified guess — if this still 404s/errors, the
+    // parseShopeeTransactions() logging will show the next real response.
     const response = await axios.post(sessionManager.getTransactionsUrl(), {
-        start_time: startTimeISO,
-        end_time: now.toISOString(),
+        data: {
+            metadata: { token: config.get('shopeeToken', 'SHOPEE_TOKEN') },
+            start_time: startTimeISO,
+            end_time: now.toISOString(),
+        },
     }, {
         headers: sessionManager.getValidHeaders(),
         timeout: 10000,
