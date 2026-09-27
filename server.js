@@ -391,7 +391,20 @@ function parseShopeeTransactions(rawData) {
         status: String(tx.status ?? tx.transaction_status ?? ''),
         time: tx.createTime ? tx.createTime * 1000 : (tx.time || tx.transaction_time || tx.created_at),
         transaction_id: tx.transactionId || tx.id || tx.transaction_id || tx.reference_id,
+        // Kept alongside the mapped fields (never sent back to callers, only into logActivity)
+        // so a claimed transaction's full original shape is inspectable in /api/logs — nobody's
+        // confirmed yet whether the Partner Portal payload has a payer/sender name field at all,
+        // and this is the way to find out from a real log instead of guessing at field names.
+        raw: tx,
     }));
+}
+
+// Strips the internal-only `raw` field (see parseShopeeTransactions) before a transaction ever
+// goes out in an HTTP response — it's for /api/logs debugging only.
+function publicTx(tx) {
+    if (!tx) return tx;
+    const { amount, status, time, transaction_id } = tx;
+    return { amount, status, time, transaction_id };
 }
 
 // Core: cocokin nominal QRIS ke transaksi masuk + claim-lock (identik logic-nya
@@ -435,7 +448,7 @@ async function verifyPayment(amount, startTime, userAgent, qrisId) {
         const existingClaim = claimedTransactions.get(tx.transaction_id);
         if (!existingClaim) {
             claimedTransactions.set(tx.transaction_id, { qrisId, claimedAt: Date.now() });
-            logActivity('INFO', `TRX ${tx.transaction_id} diklaim oleh QRIS ${qrisId || 'manual-check'}`);
+            logActivity('INFO', `TRX ${tx.transaction_id} diklaim oleh QRIS ${qrisId || 'manual-check'}`, tx.raw);
             return tx;
         } else if (qrisId && existingClaim.qrisId === qrisId) {
             return tx;
@@ -449,7 +462,7 @@ app.get('/api/qr-status/:id', async (req, res) => {
     const qrisId = req.params.id;
     const qris = qrisStore.get(qrisId);
     if (!qris) return res.json({ success: false, status: 'NOT_FOUND', message: 'QRIS tidak ditemukan' });
-    if (qris.status === 'PAID') return res.json({ success: true, paid: true, status: 'PAID', transaction: qris.transaction });
+    if (qris.status === 'PAID') return res.json({ success: true, paid: true, status: 'PAID', transaction: publicTx(qris.transaction) });
     if (Date.now() > qris.expiresAt.getTime()) {
         qrisStore.delete(qrisId);
         return res.json({ success: false, paid: false, status: 'EXPIRED' });
@@ -461,8 +474,8 @@ app.get('/api/qr-status/:id', async (req, res) => {
             qris.status = 'PAID';
             qris.transaction = matched;
             qrisStore.set(qrisId, qris);
-            logActivity('SUCCESS', `Pembayaran QRIS ${qrisId} terverifikasi lunas Rp ${qris.amount}`);
-            return res.json({ success: true, paid: true, status: 'PAID', transaction: matched });
+            logActivity('SUCCESS', `Pembayaran QRIS ${qrisId} terverifikasi lunas Rp ${qris.amount}`, matched.raw);
+            return res.json({ success: true, paid: true, status: 'PAID', transaction: publicTx(matched) });
         }
         return res.json({ success: true, paid: false, status: 'PENDING' });
     } catch (err) {
@@ -475,12 +488,24 @@ app.all('/check-payment', apiKeyAuth, async (req, res) => {
     const startTime = req.body?.startTime || req.query?.startTime;
     const scopeId = req.body?.trx_id || req.query?.trx_id || null;
     if (!amount || isNaN(amount)) return res.status(400).json({ success: false, message: 'Nominal pembayaran tidak valid' });
+    // Both required: without startTime, matching searches the whole visible transaction
+    // history for anything with the right amount (a stale unrelated transaction can then get
+    // claimed as "paid" before the real donor scans anything); without trx_id, two different
+    // callers checking the same amount without a scope both collide on the same null claim
+    // identity, so a transaction already claimed for one donation can get handed out again to
+    // a completely different one.
+    if (!startTime) {
+        return res.status(400).json({ success: false, message: 'startTime wajib diisi.' });
+    }
+    if (!scopeId) {
+        return res.status(400).json({ success: false, message: 'trx_id wajib diisi.' });
+    }
 
     try {
         const matched = await verifyPayment(amount, startTime, req.headers['user-agent'], scopeId);
         if (matched) {
-            logActivity('SUCCESS', `Pembayaran terverifikasi lunas Rp ${parseInt(amount, 10)}`, matched);
-            return res.json({ success: true, paid: true, transaction: matched });
+            logActivity('SUCCESS', `Pembayaran terverifikasi lunas Rp ${parseInt(amount, 10)}`, matched.raw);
+            return res.json({ success: true, paid: true, transaction: publicTx(matched) });
         }
         return res.json({ success: true, paid: false, message: 'Pembayaran belum ditemukan atau sudah pernah diklaim' });
     } catch (err) {
