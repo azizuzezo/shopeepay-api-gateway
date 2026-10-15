@@ -234,8 +234,9 @@ app.get('/token-status', apiKeyAuth, async (req, res) => {
         const response = await axios.post(sessionManager.getTransactionsUrl(), {
             data: { metadata: { token: config.get('shopeeToken', 'SHOPEE_TOKEN') } },
         }, { headers: sessionManager.getValidHeaders(), timeout: 5000 });
-        if (response.data?.msg) {
-            return res.json({ success: false, data: { token_status: 'invalid', message: response.data.msg } });
+        const list = response.data?.data?.list;
+        if (response.data?.msg || response.data?.message || !Array.isArray(list)) {
+            return res.json({ success: false, data: { token_status: 'invalid', message: response.data?.msg || response.data?.message || 'Token kedaluwarsa atau respons tidak valid' } });
         }
         res.json({ success: true, data: { token_status: 'valid', message: 'Token Partner Portal aktif' } });
     } catch (err) {
@@ -377,7 +378,7 @@ function handleAutoPollChange(chk) {
 // — no other status value has been observed yet, so this is confirmed for "completed" but not
 // exhaustively verified for other states like pending/cancelled).
 function parseShopeeTransactions(rawData) {
-    const rawTransactions = rawData?.data?.list || [];
+    const rawTransactions = rawData?.data?.list;
     if (!Array.isArray(rawTransactions)) {
         // Shape doesn't match the confirmed one above — dumping the raw body here (both the
         // live log and /api/logs) is what lets that mapping get corrected again if Shopee ever
@@ -511,6 +512,28 @@ app.all('/check-payment', apiKeyAuth, async (req, res) => {
     } catch (err) {
         logActivity('ERROR', `Gagal periksa pembayaran: ${err.message}`);
         return res.status(500).json({ success: false, message: 'Gagal mengambil data transaksi dari ShopeePay', error: err.message });
+    }
+});
+
+app.get('/api/debug-transactions', apiKeyAuth, async (req, res) => {
+    try {
+        const payload = {
+            data: {
+                metadata: { token: config.get('shopeeToken', 'SHOPEE_TOKEN') },
+            },
+        };
+        if (req.query.with_time === '1' || req.query.with_time === 'true') {
+            const now = new Date();
+            payload.data.start_time = req.query.start_time || new Date(now.getTime() - 24 * 3600 * 1000).toISOString();
+            payload.data.end_time = now.toISOString();
+        }
+        const response = await axios.post(sessionManager.getTransactionsUrl(), payload, {
+            headers: sessionManager.getValidHeaders(),
+            timeout: 10000,
+        });
+        res.json({ success: true, url: sessionManager.getTransactionsUrl(), data: response.data });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message, response: err.response?.data });
     }
 });
 
