@@ -437,7 +437,8 @@ async function verifyPayment(amount, startTime, userAgent, qrisId) {
 
     const transactions = parseShopeeTransactions(response.data);
     const targetAmount = parseInt(amount, 10);
-    const filterStartTimeMs = startTime ? new Date(startTime).getTime() : 0;
+    // Beri toleransi 60 detik antisipasi perbedaan jam antara server bot dan server Shopee
+    const filterStartTimeMs = startTime ? new Date(startTime).getTime() - 60000 : 0;
 
     for (const tx of transactions) {
         const txTimestamp = new Date(tx.time || 0).getTime();
