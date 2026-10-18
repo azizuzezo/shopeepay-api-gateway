@@ -241,8 +241,11 @@ app.get('/token-status', apiKeyAuth, async (req, res) => {
                 end_time: now.toISOString(),
             },
         }, { headers: sessionManager.getValidHeaders(), timeout: 10000 });
-        const list = response.data?.data?.list;
-        if (response.data?.msg || response.data?.message || !Array.isArray(list)) {
+        // Shopee omits data.list entirely when there are no transactions in the window
+        // ({"code":0,"data":{"total":"0",...},"msg":""}) — that's a healthy token, not a bad one.
+        const body = response.data;
+        const ok = body?.code === 0 && !body?.msg && !body?.message && (Array.isArray(body?.data?.list) || body?.data?.total !== undefined);
+        if (!ok) {
             console.log('[ShopeePay] /token-status ditolak, raw response:', JSON.stringify(response.data));
             return res.json({ success: false, data: { token_status: 'invalid', message: response.data?.msg || response.data?.message || 'Token kedaluwarsa atau respons tidak valid' } });
         }
@@ -387,6 +390,8 @@ function handleAutoPollChange(chk) {
 // exhaustively verified for other states like pending/cancelled).
 function parseShopeeTransactions(rawData) {
     const rawTransactions = rawData?.data?.list;
+    // No transactions in the window: Shopee sends {"code":0,"data":{"total":"0"},"msg":""} with no list.
+    if (!Array.isArray(rawTransactions) && rawData?.code === 0 && !rawData?.msg && String(rawData?.data?.total) === '0') return [];
     if (!Array.isArray(rawTransactions)) {
         // Shape doesn't match the confirmed one above — dumping the raw body here (both the
         // live log and /api/logs) is what lets that mapping get corrected again if Shopee ever
