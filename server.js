@@ -231,11 +231,19 @@ app.get('/token-status', apiKeyAuth, async (req, res) => {
         // errors with HTTP 200 (an error code/msg in the body, not a 4xx/5xx), so that
         // never actually caught anything. A truthy response.data.msg is Shopee's own way
         // of saying this call failed, whatever the HTTP status was.
+        // Must carry start_time/end_time like verifyPayment() does — without them Shopee
+        // answers with a body that has no data.list, which read as "expired" on a healthy token.
+        const now = new Date();
         const response = await axios.post(sessionManager.getTransactionsUrl(), {
-            data: { metadata: { token: config.get('shopeeToken', 'SHOPEE_TOKEN') } },
-        }, { headers: sessionManager.getValidHeaders(), timeout: 5000 });
+            data: {
+                metadata: { token: config.get('shopeeToken', 'SHOPEE_TOKEN') },
+                start_time: new Date(now.getTime() - 24 * 3600 * 1000).toISOString(),
+                end_time: now.toISOString(),
+            },
+        }, { headers: sessionManager.getValidHeaders(), timeout: 10000 });
         const list = response.data?.data?.list;
         if (response.data?.msg || response.data?.message || !Array.isArray(list)) {
+            console.log('[ShopeePay] /token-status ditolak, raw response:', JSON.stringify(response.data));
             return res.json({ success: false, data: { token_status: 'invalid', message: response.data?.msg || response.data?.message || 'Token kedaluwarsa atau respons tidak valid' } });
         }
         res.json({ success: true, data: { token_status: 'valid', message: 'Token Partner Portal aktif' } });
