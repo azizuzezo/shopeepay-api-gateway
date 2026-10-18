@@ -453,6 +453,12 @@ async function verifyPayment(amount, startTime, userAgent, qrisId) {
     // Beri toleransi 60 detik antisipasi perbedaan jam antara server bot dan server Shopee
     const filterStartTimeMs = startTime ? new Date(startTime).getTime() - 60000 : 0;
 
+    // Diagnostic: show why nothing matched (only transactions with the target amount, so the log stays small).
+    const sameAmount = transactions.filter((t) => t.amount === targetAmount);
+    console.log(`[ShopeePay] cek Rp ${targetAmount}: ${transactions.length} transaksi di jendela, ${sameAmount.length} nominal sama` +
+        sameAmount.map((t) => ` | id=${t.transaction_id} status=${t.status} waktu=${t.time}`).join('') +
+        ` | batas awal=${filterStartTimeMs}`);
+
     for (const tx of transactions) {
         const txTimestamp = new Date(tx.time || 0).getTime();
         // status "3" is the only value confirmed as "completed" so far (see
