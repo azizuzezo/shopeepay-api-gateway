@@ -218,6 +218,26 @@ if (localStorage.getItem(KEY)) unlock();
 </html>`);
 });
 
+// Mirrors the Partner Portal's own get-transaction-list request (captured 2026-10-19):
+// the time range lives in data.filter as epoch SECONDS, next to serviceList/sorter/pageSize.
+// Fields sent at any other level (e.g. data.start_time) are ignored and Shopee answers with an
+// empty list ({"code":0,"data":{"total":"0"}}), which is what made paid QRIS never verify.
+function buildTransactionListBody(startMs, endMs) {
+    return {
+        data: {
+            metadata: { token: config.get('shopeeToken', 'SHOPEE_TOKEN'), language: 'id', timezone: 'Asia/Jakarta' },
+            pageSize: 50,
+            filter: {
+                startTime: Math.floor(startMs / 1000),
+                endTime: Math.ceil(endMs / 1000) + 300,
+                serviceList: [1, 3],
+            },
+            sorter: { field: 'createTime', order: 'descend' },
+            next_position: '',
+        },
+    };
+}
+
 app.get('/token-status', apiKeyAuth, async (req, res) => {
     if (!sessionManager.hasToken()) {
         return res.json({ success: false, data: { token_status: 'missing', message: 'Token belum diisi — buka /setup untuk hubungkan akun.' } });
@@ -233,14 +253,9 @@ app.get('/token-status', apiKeyAuth, async (req, res) => {
         // of saying this call failed, whatever the HTTP status was.
         // Must carry start_time/end_time like verifyPayment() does — without them Shopee
         // answers with a body that has no data.list, which read as "expired" on a healthy token.
-        const now = new Date();
-        const response = await axios.post(sessionManager.getTransactionsUrl(), {
-            data: {
-                metadata: { token: config.get('shopeeToken', 'SHOPEE_TOKEN') },
-                start_time: new Date(now.getTime() - 24 * 3600 * 1000).toISOString(),
-                end_time: now.toISOString(),
-            },
-        }, { headers: sessionManager.getValidHeaders(), timeout: 10000 });
+        const nowMs = Date.now();
+        const response = await axios.post(sessionManager.getTransactionsUrl(),
+            buildTransactionListBody(nowMs - 24 * 3600 * 1000, nowMs), { headers: sessionManager.getValidHeaders(), timeout: 10000 });
         // Shopee omits data.list entirely when there are no transactions in the window
         // ({"code":0,"data":{"total":"0",...},"msg":""}) — that's a healthy token, not a bad one.
         const body = response.data;
@@ -430,20 +445,12 @@ async function verifyPayment(amount, startTime, userAgent, qrisId) {
     }
 
     const now = new Date();
-    const startTimeISO = startTime ? new Date(startTime).toISOString() : new Date(now.getTime() - 24 * 3600 * 1000).toISOString();
+    // Window starts an hour before the donation so clock skew / day-granularity filtering on
+    // Shopee's side can't hide it; the exact cutoff is enforced locally below.
+    const windowStartMs = (startTime ? new Date(startTime).getTime() : now.getTime() - 24 * 3600 * 1000) - 3600 * 1000;
 
-    // Confirmed working (2026-09-26): the portal's own get-transaction-list request carries
-    // the token inside data.metadata.token, not as a bearer header (see sessionManager.js's
-    // top comment — that's literally where the token was captured from). start_time/end_time
-    // are accepted as-is; whether the endpoint actually filters by them or just ignores them
-    // and returns recent history regardless hasn't been confirmed either way.
-    const response = await axios.post(sessionManager.getTransactionsUrl(), {
-        data: {
-            metadata: { token: config.get('shopeeToken', 'SHOPEE_TOKEN') },
-            start_time: startTimeISO,
-            end_time: now.toISOString(),
-        },
-    }, {
+    const response = await axios.post(sessionManager.getTransactionsUrl(),
+        buildTransactionListBody(windowStartMs, now.getTime()), {
         headers: sessionManager.getValidHeaders(),
         timeout: 10000,
     });
